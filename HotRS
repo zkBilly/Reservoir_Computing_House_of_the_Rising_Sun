@@ -1,0 +1,120 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 整理House of the Rising Sun数据，并将其归一化为（-1,1）之间的值
+hotrs_data = [0, 0, 0, 2, 3, 3, 7, 5, 5, 0, 3, 3, 14, 14, 14, 14, 12, 7, 5, 7, 7, 7, 7, 7, 14, 14, 14, 14, 12, 12, 7, 5,
+              5, 0, 3, 3, 0, 0, 0, 0, -1, -1, -1, 0, 0, 0, 0, 0]
+data = 200 * hotrs_data
+for i in range(200 * 48):
+    data[i] = [data[i] / 28]
+data = np.array(data)
+data = data.reshape((1, 200 * 48))
+noice = (np.random.rand(1, 200 * 48) * 2 - 1) / 1000  # 定义噪声
+data = data + noice  # 为原始数据叠加噪声
+
+# 设置储备池规模
+outSize = 1  # 输出维数L=1
+resSize = 400  # 储备池规模N=400
+
+# 生成储备池连接权重矩阵
+connect_pro = 0.00625
+rand_W = np.random.rand(resSize, resSize)
+W = np.zeros((resSize, resSize))
+for i in range(resSize):
+    for j in range(resSize):
+        if rand_W[i, j] <= connect_pro:
+            W[i, j] = 0.4
+        elif rand_W[i, j] >= 1 - connect_pro:
+            W[i, j] = -0.4
+eigenvalue, _ = np.linalg.eig(W)
+lambda_max = np.max(np.abs(eigenvalue))
+print("\n储备池连接权重矩阵W的特征值为：{}".format(lambda_max))
+
+# 生成反馈权重矩阵
+Wback = np.random.rand(resSize, outSize) * 4 - 2
+
+# 初始化输出权重矩阵Wout
+Wout = np.zeros((outSize, resSize))
+
+
+# 定义sigmoid激活函数
+def sigmoid(x):
+    s = 1 / (1 + np.exp(-x))
+    return s
+
+
+# 为储备池当前和前一时间步状态x(n),x(n-1)，当前和前一时间步输出y(n),y(n-1)分配空间
+x_n = x_n_1 = np.zeros((resSize, 1))
+y_n = y_n_1 = np.array([0]).reshape((1, 1))
+
+
+# 定义计算储备池当前状态x_n和当前输出y_n的函数
+def compute_x(x_n_1, y_n_1):
+    x_n = sigmoid(np.dot(W, x_n_1) + np.dot(Wback, y_n_1))
+    return x_n
+
+
+def compute_y(Wout, x_n):
+    y_n = np.tanh(np.dot(Wout, x_n))
+    y_n = y_n[0]
+    return y_n
+
+
+# 前500步丢弃，之后开始使用teacher-force方法，将目标信号从反馈段输入，进行前馈计算并记录储备池状态x
+X = np.zeros((1, resSize))  # X为记录x_n的矩阵，行数为时间步数，列数为resSize
+x_n = compute_x(x_n_1, y_n_1)
+x_n_1 = x_n
+for i in range(1500):
+    x_n = compute_x(x_n_1, data[0, i])
+    x_n_1 = x_n
+    if i in range(499, 1500):
+        X = np.vstack((X, x_n.T))
+x_1501 = x_n  # 1501步x(n)
+X_reg = X[1:-1, :]  # 1000步*400神经元
+
+# 绘制前5个神经元在teacher-force过程中状态的变化，取时间步500~595
+plt.figure(1)
+plt.plot(X_reg[0:96, 0:5])
+plt.title('x(n) of 5 neuron, n in [500, 595]')
+
+
+# 定义计算mse的函数
+def compute_mse(Y_target, Wout, X_reg):
+    Y_target_mse = Y_target[:48]
+    X_reg_mse = X_reg[:48, :]
+    error = np.arctanh(Y_target_mse) - np.dot(X_reg_mse, Wout)
+    error_square = error * error.T
+    mse = np.sum(error_square) / 48
+    return mse
+
+
+# 伪逆法求解Wout
+Y_target = data[0, 500:1500]  # 目标信号1000步
+Wout = np.dot(np.linalg.pinv(X_reg), np.arctanh(Y_target))  # 这里有arctanh非常非常重要
+mse_train = compute_mse(Y_target, Wout, X_reg)
+print('训练mse误差为：{}'.format(mse_train))
+reg_result = np.tanh(np.dot(X_reg, Wout))
+plt.figure(2)
+plt.plot(reg_result[:250])
+plt.plot(Y_target[:250])
+plt.title("wobble fit")
+
+# 求得Wout后，前n步采用teacher-force，之后自主输出
+n = 480
+x_n = np.zeros((resSize, 1))
+y_n = 0
+Y = []
+for i in range(1920):
+    if i in range(n):
+        x_n = compute_x(x_n, y_n)  # 479
+        y_n = data[0, i]
+    else:
+        y_n = compute_y(Wout, x_n)  # 479
+        Y.append(y_n)
+        x_n = compute_x(x_n, y_n)
+plt.figure(3)
+plot_n = 300
+plt.plot(Y[:plot_n])
+plt.plot(data[0, (n - 1):(n - 1) + plot_n])
+plt.title("wobble result")
+plt.show()
